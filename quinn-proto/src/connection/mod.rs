@@ -1146,11 +1146,7 @@ impl Connection {
                     self.spaces[SpaceId::Data].pending.new_cids.push(frame);
                 });
                 // Update Timer::PushNewCid
-                if self
-                    .timers
-                    .get(Timer::PushNewCid)
-                    .map_or(true, |x| x <= now)
-                {
+                if self.timers.get(Timer::PushNewCid).is_none_or(|x| x <= now) {
                     self.reset_cid_retirement();
                 }
             }
@@ -1306,7 +1302,9 @@ impl Connection {
     /// Whether the connection is in the process of being established
     ///
     /// If this returns `false`, the connection may be either established or closed, signaled by the
-    /// emission of a `Connected` or `ConnectionLost` message respectively.
+    /// emission of a [`Connected`](Event::Connected) or [`ConnectionLost`](Event::ConnectionLost)
+    /// event respectively. Note that locally-initiated closes via [`close()`](Self::close) do not
+    /// emit a `ConnectionLost` event.
     pub fn is_handshaking(&self) -> bool {
         self.state.is_handshake()
     }
@@ -1317,7 +1315,10 @@ impl Connection {
     /// either peer application intentionally closes it, or when either transport layer detects an
     /// error such as a time-out or certificate validation failure.
     ///
-    /// A `ConnectionLost` event is emitted with details when the connection becomes closed.
+    /// A [`ConnectionLost`](Event::ConnectionLost) event is emitted with details when the
+    /// connection is closed by the peer or due to an error. When the local application closes
+    /// the connection via [`close()`](Self::close), no `ConnectionLost` event is emitted;
+    /// instead, pending operations fail with [`ConnectionError::LocallyClosed`].
     pub fn is_closed(&self) -> bool {
         self.state.is_closed()
     }
@@ -1438,10 +1439,7 @@ impl Connection {
         }
         let new_largest = {
             let space = &mut self.spaces[space];
-            if space
-                .largest_acked_packet
-                .map_or(true, |pn| ack.largest > pn)
-            {
+            if space.largest_acked_packet.is_none_or(|pn| ack.largest > pn) {
                 space.largest_acked_packet = Some(ack.largest);
                 if let Some(info) = space.sent_packets.get(&ack.largest) {
                     // This should always succeed, but a misbehaving peer might ACK a packet we
@@ -1885,7 +1883,7 @@ impl Connection {
                 continue;
             };
             let pto = last_ack_eliciting + duration;
-            if result.map_or(true, |(earliest_pto, _)| pto < earliest_pto) {
+            if result.is_none_or(|(earliest_pto, _)| pto < earliest_pto) {
                 result = Some((pto, space));
             }
         }
@@ -3667,7 +3665,7 @@ impl Connection {
             .filter(|&&t| !matches!(t, Timer::KeepAlive | Timer::PushNewCid | Timer::KeyDiscard))
             .filter_map(|&t| Some((t, self.timers.get(t)?)))
             .min_by_key(|&(_, time)| time)
-            .map_or(true, |(timer, _)| timer == Timer::Idle)
+            .is_none_or(|(timer, _)| timer == Timer::Idle)
     }
 
     /// Whether explicit congestion notification is in use on outgoing packets.
@@ -4034,7 +4032,10 @@ pub enum Event {
     HandshakeConfirmed,
     /// The connection was lost
     ///
-    /// Emitted if the peer closes the connection or an error is encountered.
+    /// Emitted when the connection is closed due to an error, a timeout, or the peer closing it.
+    /// This is **not** emitted when the local application closes the connection via
+    /// [`Connection::close()`](crate::Connection::close). In that case, pending operations will
+    /// fail with [`ConnectionError::LocallyClosed`].
     ConnectionLost {
         /// Reason that the connection was closed
         reason: ConnectionError,
